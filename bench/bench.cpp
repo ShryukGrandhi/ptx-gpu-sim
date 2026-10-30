@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
             rows.push_back({num(stride), fmt(r.stats.gld_sectors_per_request()), num(r.stats.dram_read_bytes),
                             num(r.stats.cycles), fmt(useful), fmt((double)r.stats.cycles / base) + "x"});
         }
-        table({"stride", "sectors/request", "DRAM bytes read", "cycles", "useful B/cycle", "slowdown"}, rows);
+        table({"stride", "sectors/request", "DRAM bytes read", "cycles", "useful B/cycle (load + store)", "slowdown"}, rows);
     }
 
     // 2. Vector loads ---------------------------------------------------------
@@ -199,7 +199,7 @@ int main(int argc, char** argv) {
                             pct(r.stats.achieved_occupancy), num(r.stats.cycles),
                             fmt(3.0 * n * 4 / r.stats.cycles), pct(r.stats.stall_fraction(kStallLongScoreboard))});
         }
-        table({"CTAs/SM", "theoretical occupancy", "achieved occupancy", "cycles", "DRAM-side B/cycle",
+        table({"CTAs/SM", "theoretical occupancy", "achieved occupancy", "cycles", "kernel B/cycle (2 loads + 1 store)",
                "long_scoreboard stalls"},
               rows);
     }
