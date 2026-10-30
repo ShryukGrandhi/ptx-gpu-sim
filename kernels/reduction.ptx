@@ -1,0 +1,298 @@
+//
+// Block-level sum reductions (one partial sum per CTA, blockDim.x == 256).
+// Four classic variants that differ in how they use the SIMT hardware:
+//   reduce_interleaved   tid % (2*s) == 0      -> divergent warps
+//   reduce_strided_index sdata[2*s*tid]        -> no divergence, shared-memory bank conflicts
+//   reduce_sequential    tid < s               -> no divergence, conflict-free
+//   reduce_warp_shuffle  shfl.sync.down       -> registers instead of shared memory
+//
+.version 7.0
+.target sm_70
+.address_size 64
+
+.visible .entry reduce_interleaved(
+	.param .u64 reduce_interleaved_param_in,
+	.param .u64 reduce_interleaved_param_out,
+	.param .u32 reduce_interleaved_param_n
+)
+{
+	.reg .pred 	%p<5>;
+	.reg .b32 	%r<14>;
+	.reg .f32 	%f<5>;
+	.reg .b64 	%rd<9>;
+	.shared .align 4 .b8 ri_sdata[1024];
+
+	ld.param.u64 	%rd1, [reduce_interleaved_param_in];
+	ld.param.u64 	%rd2, [reduce_interleaved_param_out];
+	ld.param.u32 	%r1, [reduce_interleaved_param_n];
+	cvta.to.global.u64 	%rd3, %rd1;
+	cvta.to.global.u64 	%rd4, %rd2;
+	mov.u32 	%r2, %tid.x;
+	mov.u32 	%r3, %ctaid.x;
+	mov.u32 	%r4, %ntid.x;
+	mad.lo.s32 	%r5, %r3, %r4, %r2;
+	mov.f32 	%f1, 0f00000000;
+	setp.ge.u32 	%p1, %r5, %r1;
+	@%p1 bra 	$L__fill;
+	mul.wide.u32 	%rd5, %r5, 4;
+	add.s64 	%rd6, %rd3, %rd5;
+	ld.global.f32 	%f1, [%rd6];
+$L__fill:
+	mov.u32 	%r6, ri_sdata;
+	shl.b32 	%r7, %r2, 2;
+	add.s32 	%r8, %r6, %r7;
+	st.shared.f32 	[%r8], %f1;
+	bar.sync 	0;
+	mov.u32 	%r9, 1;
+$L__loop:
+	setp.ge.u32 	%p2, %r9, %r4;
+	@%p2 bra 	$L__loop_end;
+	shl.b32 	%r10, %r9, 1;
+	rem.u32 	%r11, %r2, %r10;
+	setp.ne.s32 	%p3, %r11, 0;
+	@%p3 bra 	$L__skip;
+	shl.b32 	%r12, %r9, 2;
+	add.s32 	%r13, %r8, %r12;
+	ld.shared.f32 	%f2, [%r13];
+	ld.shared.f32 	%f3, [%r8];
+	add.f32 	%f4, %f3, %f2;
+	st.shared.f32 	[%r8], %f4;
+$L__skip:
+	bar.sync 	0;
+	mov.u32 	%r9, %r10;
+	bra.uni 	$L__loop;
+$L__loop_end:
+	setp.ne.s32 	%p4, %r2, 0;
+	@%p4 bra 	$L__exit;
+	ld.shared.f32 	%f2, [ri_sdata];
+	mul.wide.u32 	%rd7, %r3, 4;
+	add.s64 	%rd8, %rd4, %rd7;
+	st.global.f32 	[%rd8], %f2;
+$L__exit:
+	ret;
+}
+
+.visible .entry reduce_strided_index(
+	.param .u64 reduce_strided_index_param_in,
+	.param .u64 reduce_strided_index_param_out,
+	.param .u32 reduce_strided_index_param_n
+)
+{
+	.reg .pred 	%p<5>;
+	.reg .b32 	%r<16>;
+	.reg .f32 	%f<5>;
+	.reg .b64 	%rd<9>;
+	.shared .align 4 .b8 rs_sdata[1024];
+
+	ld.param.u64 	%rd1, [reduce_strided_index_param_in];
+	ld.param.u64 	%rd2, [reduce_strided_index_param_out];
+	ld.param.u32 	%r1, [reduce_strided_index_param_n];
+	cvta.to.global.u64 	%rd3, %rd1;
+	cvta.to.global.u64 	%rd4, %rd2;
+	mov.u32 	%r2, %tid.x;
+	mov.u32 	%r3, %ctaid.x;
+	mov.u32 	%r4, %ntid.x;
+	mad.lo.s32 	%r5, %r3, %r4, %r2;
+	mov.f32 	%f1, 0f00000000;
+	setp.ge.u32 	%p1, %r5, %r1;
+	@%p1 bra 	$L__fill;
+	mul.wide.u32 	%rd5, %r5, 4;
+	add.s64 	%rd6, %rd3, %rd5;
+	ld.global.f32 	%f1, [%rd6];
+$L__fill:
+	mov.u32 	%r6, rs_sdata;
+	shl.b32 	%r7, %r2, 2;
+	add.s32 	%r8, %r6, %r7;
+	st.shared.f32 	[%r8], %f1;
+	bar.sync 	0;
+	mov.u32 	%r9, 1;
+$L__loop:
+	setp.ge.u32 	%p2, %r9, %r4;
+	@%p2 bra 	$L__loop_end;
+	shl.b32 	%r10, %r9, 1;
+	mul.lo.s32 	%r11, %r10, %r2;
+	setp.ge.u32 	%p3, %r11, %r4;
+	@%p3 bra 	$L__skip;
+	shl.b32 	%r12, %r11, 2;
+	add.s32 	%r13, %r6, %r12;
+	shl.b32 	%r14, %r9, 2;
+	add.s32 	%r15, %r13, %r14;
+	ld.shared.f32 	%f2, [%r15];
+	ld.shared.f32 	%f3, [%r13];
+	add.f32 	%f4, %f3, %f2;
+	st.shared.f32 	[%r13], %f4;
+$L__skip:
+	bar.sync 	0;
+	mov.u32 	%r9, %r10;
+	bra.uni 	$L__loop;
+$L__loop_end:
+	setp.ne.s32 	%p4, %r2, 0;
+	@%p4 bra 	$L__exit;
+	ld.shared.f32 	%f2, [rs_sdata];
+	mul.wide.u32 	%rd7, %r3, 4;
+	add.s64 	%rd8, %rd4, %rd7;
+	st.global.f32 	[%rd8], %f2;
+$L__exit:
+	ret;
+}
+
+.visible .entry reduce_sequential(
+	.param .u64 reduce_sequential_param_in,
+	.param .u64 reduce_sequential_param_out,
+	.param .u32 reduce_sequential_param_n
+)
+{
+	.reg .pred 	%p<5>;
+	.reg .b32 	%r<13>;
+	.reg .f32 	%f<5>;
+	.reg .b64 	%rd<9>;
+	.shared .align 4 .b8 rq_sdata[1024];
+
+	ld.param.u64 	%rd1, [reduce_sequential_param_in];
+	ld.param.u64 	%rd2, [reduce_sequential_param_out];
+	ld.param.u32 	%r1, [reduce_sequential_param_n];
+	cvta.to.global.u64 	%rd3, %rd1;
+	cvta.to.global.u64 	%rd4, %rd2;
+	mov.u32 	%r2, %tid.x;
+	mov.u32 	%r3, %ctaid.x;
+	mov.u32 	%r4, %ntid.x;
+	mad.lo.s32 	%r5, %r3, %r4, %r2;
+	mov.f32 	%f1, 0f00000000;
+	setp.ge.u32 	%p1, %r5, %r1;
+	@%p1 bra 	$L__fill;
+	mul.wide.u32 	%rd5, %r5, 4;
+	add.s64 	%rd6, %rd3, %rd5;
+	ld.global.f32 	%f1, [%rd6];
+$L__fill:
+	mov.u32 	%r6, rq_sdata;
+	shl.b32 	%r7, %r2, 2;
+	add.s32 	%r8, %r6, %r7;
+	st.shared.f32 	[%r8], %f1;
+	bar.sync 	0;
+	shr.u32 	%r9, %r4, 1;
+$L__loop:
+	setp.eq.s32 	%p2, %r9, 0;
+	@%p2 bra 	$L__loop_end;
+	setp.ge.u32 	%p3, %r2, %r9;
+	@%p3 bra 	$L__skip;
+	shl.b32 	%r10, %r9, 2;
+	add.s32 	%r11, %r8, %r10;
+	ld.shared.f32 	%f2, [%r11];
+	ld.shared.f32 	%f3, [%r8];
+	add.f32 	%f4, %f3, %f2;
+	st.shared.f32 	[%r8], %f4;
+$L__skip:
+	bar.sync 	0;
+	shr.u32 	%r9, %r9, 1;
+	bra.uni 	$L__loop;
+$L__loop_end:
+	setp.ne.s32 	%p4, %r2, 0;
+	@%p4 bra 	$L__exit;
+	ld.shared.f32 	%f2, [rq_sdata];
+	mul.wide.u32 	%rd7, %r3, 4;
+	add.s64 	%rd8, %rd4, %rd7;
+	st.global.f32 	[%rd8], %f2;
+$L__exit:
+	ret;
+}
+
+.visible .entry reduce_warp_shuffle(
+	.param .u64 reduce_warp_shuffle_param_in,
+	.param .u64 reduce_warp_shuffle_param_out,
+	.param .u32 reduce_warp_shuffle_param_n
+)
+{
+	.reg .pred 	%p<5>;
+	.reg .b32 	%r<20>;
+	.reg .f32 	%f<8>;
+	.reg .b64 	%rd<9>;
+	.shared .align 4 .b8 rw_partial[128];
+
+	ld.param.u64 	%rd1, [reduce_warp_shuffle_param_in];
+	ld.param.u64 	%rd2, [reduce_warp_shuffle_param_out];
+	ld.param.u32 	%r1, [reduce_warp_shuffle_param_n];
+	cvta.to.global.u64 	%rd3, %rd1;
+	cvta.to.global.u64 	%rd4, %rd2;
+	mov.u32 	%r2, %tid.x;
+	mov.u32 	%r3, %ctaid.x;
+	mov.u32 	%r4, %ntid.x;
+	mad.lo.s32 	%r5, %r3, %r4, %r2;
+	mov.f32 	%f1, 0f00000000;
+	setp.ge.u32 	%p1, %r5, %r1;
+	@%p1 bra 	$L__have_value;
+	mul.wide.u32 	%rd5, %r5, 4;
+	add.s64 	%rd6, %rd3, %rd5;
+	ld.global.f32 	%f1, [%rd6];
+$L__have_value:
+	// warp-level tree: 16, 8, 4, 2, 1
+	mov.b32 	%r6, %f1;
+	shfl.sync.down.b32 	%r7, %r6, 16, 31, -1;
+	mov.b32 	%f2, %r7;
+	add.f32 	%f1, %f1, %f2;
+	mov.b32 	%r6, %f1;
+	shfl.sync.down.b32 	%r7, %r6, 8, 31, -1;
+	mov.b32 	%f2, %r7;
+	add.f32 	%f1, %f1, %f2;
+	mov.b32 	%r6, %f1;
+	shfl.sync.down.b32 	%r7, %r6, 4, 31, -1;
+	mov.b32 	%f2, %r7;
+	add.f32 	%f1, %f1, %f2;
+	mov.b32 	%r6, %f1;
+	shfl.sync.down.b32 	%r7, %r6, 2, 31, -1;
+	mov.b32 	%f2, %r7;
+	add.f32 	%f1, %f1, %f2;
+	mov.b32 	%r6, %f1;
+	shfl.sync.down.b32 	%r7, %r6, 1, 31, -1;
+	mov.b32 	%f2, %r7;
+	add.f32 	%f1, %f1, %f2;
+	// lane 0 of each warp publishes its partial sum
+	and.b32 	%r8, %r2, 31;
+	shr.u32 	%r9, %r2, 5;
+	mov.u32 	%r10, rw_partial;
+	setp.ne.s32 	%p2, %r8, 0;
+	@%p2 bra 	$L__published;
+	shl.b32 	%r11, %r9, 2;
+	add.s32 	%r12, %r10, %r11;
+	st.shared.f32 	[%r12], %f1;
+$L__published:
+	bar.sync 	0;
+	// warp 0 reduces the per-warp partials
+	setp.ne.s32 	%p3, %r9, 0;
+	@%p3 bra 	$L__exit;
+	add.s32 	%r13, %r4, 31;
+	shr.u32 	%r14, %r13, 5;
+	mov.f32 	%f3, 0f00000000;
+	setp.ge.u32 	%p4, %r2, %r14;
+	@%p4 bra 	$L__have_partial;
+	shl.b32 	%r15, %r2, 2;
+	add.s32 	%r16, %r10, %r15;
+	ld.shared.f32 	%f3, [%r16];
+$L__have_partial:
+	mov.b32 	%r6, %f3;
+	shfl.sync.down.b32 	%r7, %r6, 16, 31, -1;
+	mov.b32 	%f4, %r7;
+	add.f32 	%f3, %f3, %f4;
+	mov.b32 	%r6, %f3;
+	shfl.sync.down.b32 	%r7, %r6, 8, 31, -1;
+	mov.b32 	%f4, %r7;
+	add.f32 	%f3, %f3, %f4;
+	mov.b32 	%r6, %f3;
+	shfl.sync.down.b32 	%r7, %r6, 4, 31, -1;
+	mov.b32 	%f4, %r7;
+	add.f32 	%f3, %f3, %f4;
+	mov.b32 	%r6, %f3;
+	shfl.sync.down.b32 	%r7, %r6, 2, 31, -1;
+	mov.b32 	%f4, %r7;
+	add.f32 	%f3, %f3, %f4;
+	mov.b32 	%r6, %f3;
+	shfl.sync.down.b32 	%r7, %r6, 1, 31, -1;
+	mov.b32 	%f4, %r7;
+	add.f32 	%f3, %f3, %f4;
+	setp.ne.s32 	%p4, %r2, 0;
+	@%p4 bra 	$L__exit;
+	mul.wide.u32 	%rd7, %r3, 4;
+	add.s64 	%rd8, %rd4, %rd7;
+	st.global.f32 	[%rd8], %f3;
+$L__exit:
+	ret;
+}

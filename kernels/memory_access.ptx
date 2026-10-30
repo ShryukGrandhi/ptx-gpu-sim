@@ -1,0 +1,114 @@
+//
+// Global-memory access patterns: a coalesced element-wise kernel and a
+// strided gather that touches one 32-byte sector per lane once stride >= 8.
+//
+.version 7.0
+.target sm_70
+.address_size 64
+
+// c[i] = a[i] + b[i]  for i < n
+.visible .entry vecadd(
+	.param .u64 vecadd_param_a,
+	.param .u64 vecadd_param_b,
+	.param .u64 vecadd_param_c,
+	.param .u32 vecadd_param_n
+)
+{
+	.reg .pred 	%p<2>;
+	.reg .b32 	%r<6>;
+	.reg .f32 	%f<4>;
+	.reg .b64 	%rd<11>;
+
+	ld.param.u64 	%rd1, [vecadd_param_a];
+	ld.param.u64 	%rd2, [vecadd_param_b];
+	ld.param.u64 	%rd3, [vecadd_param_c];
+	ld.param.u32 	%r1, [vecadd_param_n];
+	mov.u32 	%r2, %ctaid.x;
+	mov.u32 	%r3, %ntid.x;
+	mov.u32 	%r4, %tid.x;
+	mad.lo.s32 	%r5, %r2, %r3, %r4;
+	setp.ge.u32 	%p1, %r5, %r1;
+	@%p1 bra 	$L__done;
+	cvta.to.global.u64 	%rd4, %rd1;
+	cvta.to.global.u64 	%rd5, %rd2;
+	cvta.to.global.u64 	%rd6, %rd3;
+	mul.wide.u32 	%rd7, %r5, 4;
+	add.s64 	%rd8, %rd4, %rd7;
+	add.s64 	%rd9, %rd5, %rd7;
+	add.s64 	%rd10, %rd6, %rd7;
+	ld.global.f32 	%f1, [%rd8];
+	ld.global.f32 	%f2, [%rd9];
+	add.f32 	%f3, %f1, %f2;
+	st.global.f32 	[%rd10], %f3;
+$L__done:
+	ret;
+}
+
+// out[i] = in[i * stride]  for i < n
+.visible .entry strided_copy(
+	.param .u64 strided_copy_param_in,
+	.param .u64 strided_copy_param_out,
+	.param .u32 strided_copy_param_n,
+	.param .u32 strided_copy_param_stride
+)
+{
+	.reg .pred 	%p<2>;
+	.reg .b32 	%r<8>;
+	.reg .f32 	%f<2>;
+	.reg .b64 	%rd<9>;
+
+	ld.param.u64 	%rd1, [strided_copy_param_in];
+	ld.param.u64 	%rd2, [strided_copy_param_out];
+	ld.param.u32 	%r1, [strided_copy_param_n];
+	ld.param.u32 	%r2, [strided_copy_param_stride];
+	mov.u32 	%r3, %ctaid.x;
+	mov.u32 	%r4, %ntid.x;
+	mov.u32 	%r5, %tid.x;
+	mad.lo.s32 	%r6, %r3, %r4, %r5;
+	setp.ge.u32 	%p1, %r6, %r1;
+	@%p1 bra 	$L__done;
+	cvta.to.global.u64 	%rd3, %rd1;
+	cvta.to.global.u64 	%rd4, %rd2;
+	mul.lo.s32 	%r7, %r6, %r2;
+	mul.wide.u32 	%rd5, %r7, 4;
+	add.s64 	%rd6, %rd3, %rd5;
+	ld.global.f32 	%f1, [%rd6];
+	mul.wide.u32 	%rd7, %r6, 4;
+	add.s64 	%rd8, %rd4, %rd7;
+	st.global.f32 	[%rd8], %f1;
+$L__done:
+	ret;
+}
+
+// out[i] = in[i] for i < n, moving four floats per thread with 16-byte vector accesses (n % 4 == 0).
+.visible .entry copy_vec4(
+	.param .u64 copy_vec4_param_in,
+	.param .u64 copy_vec4_param_out,
+	.param .u32 copy_vec4_param_n
+)
+{
+	.reg .pred 	%p<2>;
+	.reg .b32 	%r<8>;
+	.reg .f32 	%f<5>;
+	.reg .b64 	%rd<8>;
+
+	ld.param.u64 	%rd1, [copy_vec4_param_in];
+	ld.param.u64 	%rd2, [copy_vec4_param_out];
+	ld.param.u32 	%r1, [copy_vec4_param_n];
+	mov.u32 	%r2, %ctaid.x;
+	mov.u32 	%r3, %ntid.x;
+	mov.u32 	%r4, %tid.x;
+	mad.lo.s32 	%r5, %r2, %r3, %r4;
+	shl.b32 	%r6, %r5, 2;
+	setp.ge.u32 	%p1, %r6, %r1;
+	@%p1 bra 	$L__done;
+	cvta.to.global.u64 	%rd3, %rd1;
+	cvta.to.global.u64 	%rd4, %rd2;
+	mul.wide.u32 	%rd5, %r5, 16;
+	add.s64 	%rd6, %rd3, %rd5;
+	add.s64 	%rd7, %rd4, %rd5;
+	ld.global.v4.f32 	{%f1, %f2, %f3, %f4}, [%rd6];
+	st.global.v4.f32 	[%rd7], {%f1, %f2, %f3, %f4};
+$L__done:
+	ret;
+}

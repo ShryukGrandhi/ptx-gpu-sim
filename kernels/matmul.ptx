@@ -1,0 +1,147 @@
+//
+// Single-precision matrix multiply C = A * B for n x n row-major matrices
+// (n % 16 == 0), blockDim = (16, 16).
+//   matmul_naive  every thread streams a row of A and a column of B from global memory
+//   matmul_tiled  16x16 tiles of A and B staged in shared memory; each global element
+//                 is loaded once per tile instead of once per output element
+//
+.version 7.0
+.target sm_70
+.address_size 64
+
+.visible .entry matmul_naive(
+	.param .u64 matmul_naive_param_a,
+	.param .u64 matmul_naive_param_b,
+	.param .u64 matmul_naive_param_c,
+	.param .u32 matmul_naive_param_n
+)
+{
+	.reg .pred 	%p<4>;
+	.reg .b32 	%r<14>;
+	.reg .f32 	%f<4>;
+	.reg .b64 	%rd<16>;
+
+	ld.param.u64 	%rd1, [matmul_naive_param_a];
+	ld.param.u64 	%rd2, [matmul_naive_param_b];
+	ld.param.u64 	%rd3, [matmul_naive_param_c];
+	ld.param.u32 	%r1, [matmul_naive_param_n];
+	cvta.to.global.u64 	%rd4, %rd1;
+	cvta.to.global.u64 	%rd5, %rd2;
+	cvta.to.global.u64 	%rd6, %rd3;
+	mov.u32 	%r2, %ctaid.y;
+	mov.u32 	%r3, %ntid.y;
+	mov.u32 	%r4, %tid.y;
+	mad.lo.s32 	%r5, %r2, %r3, %r4;
+	mov.u32 	%r6, %ctaid.x;
+	mov.u32 	%r7, %ntid.x;
+	mov.u32 	%r8, %tid.x;
+	mad.lo.s32 	%r9, %r6, %r7, %r8;
+	setp.ge.u32 	%p1, %r5, %r1;
+	setp.ge.u32 	%p2, %r9, %r1;
+	or.pred 	%p3, %p1, %p2;
+	@%p3 bra 	$L__exit;
+	mul.lo.s32 	%r10, %r5, %r1;
+	mul.wide.u32 	%rd7, %r10, 4;
+	add.s64 	%rd8, %rd4, %rd7;
+	mul.wide.u32 	%rd9, %r9, 4;
+	add.s64 	%rd10, %rd5, %rd9;
+	mul.wide.u32 	%rd11, %r1, 4;
+	mov.f32 	%f1, 0f00000000;
+	mov.u32 	%r11, 0;
+$L__k:
+	ld.global.f32 	%f2, [%rd8];
+	ld.global.f32 	%f3, [%rd10];
+	fma.rn.f32 	%f1, %f2, %f3, %f1;
+	add.s64 	%rd8, %rd8, 4;
+	add.s64 	%rd10, %rd10, %rd11;
+	add.s32 	%r11, %r11, 1;
+	setp.lt.u32 	%p1, %r11, %r1;
+	@%p1 bra 	$L__k;
+	add.s32 	%r12, %r10, %r9;
+	mul.wide.u32 	%rd12, %r12, 4;
+	add.s64 	%rd13, %rd6, %rd12;
+	st.global.f32 	[%rd13], %f1;
+$L__exit:
+	ret;
+}
+
+.visible .entry matmul_tiled(
+	.param .u64 matmul_tiled_param_a,
+	.param .u64 matmul_tiled_param_b,
+	.param .u64 matmul_tiled_param_c,
+	.param .u32 matmul_tiled_param_n
+)
+{
+	.reg .pred 	%p<3>;
+	.reg .b32 	%r<30>;
+	.reg .f32 	%f<6>;
+	.reg .b64 	%rd<14>;
+	.shared .align 4 .b8 mt_As[1024];
+	.shared .align 4 .b8 mt_Bs[1024];
+
+	ld.param.u64 	%rd1, [matmul_tiled_param_a];
+	ld.param.u64 	%rd2, [matmul_tiled_param_b];
+	ld.param.u64 	%rd3, [matmul_tiled_param_c];
+	ld.param.u32 	%r1, [matmul_tiled_param_n];
+	cvta.to.global.u64 	%rd4, %rd1;
+	cvta.to.global.u64 	%rd5, %rd2;
+	cvta.to.global.u64 	%rd6, %rd3;
+	mov.u32 	%r2, %tid.x;
+	mov.u32 	%r3, %tid.y;
+	mov.u32 	%r4, %ctaid.x;
+	mov.u32 	%r5, %ctaid.y;
+	shl.b32 	%r6, %r5, 4;
+	add.s32 	%r7, %r6, %r3;          // row
+	shl.b32 	%r8, %r4, 4;
+	add.s32 	%r9, %r8, %r2;          // col
+	mad.lo.s32 	%r10, %r7, %r1, %r2;
+	mul.wide.u32 	%rd7, %r10, 4;
+	add.s64 	%rd8, %rd4, %rd7;       // &A[row][tx]
+	mad.lo.s32 	%r11, %r3, %r1, %r9;
+	mul.wide.u32 	%rd9, %r11, 4;
+	add.s64 	%rd10, %rd5, %rd9;      // &B[ty][col]
+	shl.b32 	%r12, %r1, 6;
+	cvt.u64.u32 	%rd11, %r12;        // 16 rows of B in bytes
+	mov.u32 	%r13, mt_As;
+	mov.u32 	%r14, mt_Bs;
+	shl.b32 	%r15, %r3, 4;
+	add.s32 	%r16, %r15, %r2;
+	shl.b32 	%r17, %r16, 2;
+	add.s32 	%r18, %r13, %r17;       // &As[ty][tx]
+	add.s32 	%r19, %r14, %r17;       // &Bs[ty][tx]
+	shl.b32 	%r20, %r3, 6;
+	add.s32 	%r21, %r13, %r20;       // &As[ty][0]
+	shl.b32 	%r22, %r2, 2;
+	add.s32 	%r23, %r14, %r22;       // &Bs[0][tx]
+	mov.f32 	%f1, 0f00000000;
+	mov.u32 	%r24, 0;
+$L__tile:
+	ld.global.f32 	%f2, [%rd8];
+	st.shared.f32 	[%r18], %f2;
+	ld.global.f32 	%f3, [%rd10];
+	st.shared.f32 	[%r19], %f3;
+	bar.sync 	0;
+	mov.u32 	%r25, %r21;
+	mov.u32 	%r26, %r23;
+	mov.u32 	%r27, 0;
+$L__k:
+	ld.shared.f32 	%f4, [%r25];
+	ld.shared.f32 	%f5, [%r26];
+	fma.rn.f32 	%f1, %f4, %f5, %f1;
+	add.s32 	%r25, %r25, 4;
+	add.s32 	%r26, %r26, 64;
+	add.s32 	%r27, %r27, 1;
+	setp.lt.u32 	%p1, %r27, 16;
+	@%p1 bra 	$L__k;
+	bar.sync 	0;
+	add.s64 	%rd8, %rd8, 64;
+	add.s64 	%rd10, %rd10, %rd11;
+	add.s32 	%r24, %r24, 16;
+	setp.lt.u32 	%p2, %r24, %r1;
+	@%p2 bra 	$L__tile;
+	mad.lo.s32 	%r28, %r7, %r1, %r9;
+	mul.wide.u32 	%rd12, %r28, 4;
+	add.s64 	%rd13, %rd6, %rd12;
+	st.global.f32 	[%rd13], %f1;
+	ret;
+}
