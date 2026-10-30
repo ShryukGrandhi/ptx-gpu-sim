@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  simulator:
+    name: build, test, benchmark (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make -j4 CXX=${{ matrix.compiler }}
+      - name: Unit and kernel tests
+        run: make test CXX=${{ matrix.compiler }}
+      - name: Benchmark (quick sizes)
+        run: make bench-quick CXX=${{ matrix.compiler }}
+      - name: Benchmark (full sizes)
+        if: matrix.compiler == 'g++'
+        run: make bench CXX=${{ matrix.compiler }}
+
+  cuda-toolchain:
+    # No GPU on hosted runners: this job validates the PTX with NVIDIA's assembler,
+    # compiles the CUDA sources, and runs nvcc-generated PTX through the simulator.
+    name: ptxas + nvcc conformance
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.6.3-devel-ubuntu24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble hand-written PTX with ptxas
+        run: make ptx-check
+      - name: Compile CUDA kernels and GPU checker with nvcc
+        run: make cuda
+      - name: Run nvcc-generated PTX in the simulator
+        run: make nvcc-conformance
