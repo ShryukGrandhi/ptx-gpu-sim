@@ -1,0 +1,29 @@
+{
+  "name": "ptx-gpu-sim",
+  "language": "C++",
+  "tech": [
+    "CUDA",
+    "PTX",
+    "GPU Architecture",
+    "C++17",
+    "SIMT",
+    "Performance Analysis"
+  ],
+  "targets": [
+    "CUDA",
+    "GPU Architecture",
+    "GPU performance analysis and profiling metrics",
+    "Computer architecture simulation"
+  ],
+  "bullets": [
+    "Built a cycle-level SIMT GPU simulator in C++17 that runs CUDA PTX, modeling warp schedulers, IPDOM branch divergence, memory coalescing, shared-memory bank conflicts and L1/L2/DRAM",
+    "Wrote 14 CUDA/PTX kernels (SGEMM, transpose, reductions, histogram); simulator showed tiling cuts SGEMM global loads 16x and 32x33 padding removes transpose bank conflicts (1.55x)",
+    "Validated with 60 tests and GitHub Actions CI that assembles PTX with ptxas and runs nvcc-generated PTX; warp-shuffle reduction measured 1.56x faster than divergent version"
+  ],
+  "summary": {
+    "what": "A C++17 cycle-level SIMT GPU simulator that executes PTX kernels (hand-written or produced by nvcc from CUDA C++) and reports the hardware metrics that explain kernel performance: IPC, SIMD efficiency, sectors per request, bank-conflict wavefronts, cache hit rates, occupancy and per-scheduler stall reasons.",
+    "how": "A PTX parser feeds a CFG/post-dominator pass that gives every branch its reconvergence point; an engine dispatches CTAs to SMs under warp/register/shared-memory limits, issues one instruction per scheduler per cycle (GTO or round-robin) with a register scoreboard, executes all 32 lanes functionally, and times memory through a sector coalescer, 32-bank shared-memory model, sectored L1/L2 caches and bandwidth-limited DRAM. Results are checked against CPU references; CI validates the PTX with ptxas and runs nvcc's PTX for the same kernels.",
+    "hardest": "Getting divergence and timing right together: computing immediate post-dominators so the per-warp SIMT stack reconverges at the right pc (including early returns and loops with per-lane trip counts), and fast-forwarding idle cycles while still charging every scheduler cycle to exactly one stall reason, which a test checks sums to cycles x SMs x schedulers.",
+    "say": "I built a GPU simulator that runs real PTX, including what nvcc emits, and models warps, divergence, coalescing, bank conflicts, caches and occupancy. It let me measure why optimizations work, for example padding a transpose tile to 33 columns drops shared-memory wavefronts per request from 16.5 to 1. The numbers are from an uncalibrated model, so I use it to explain kernel variants, not to predict real GPU timings."
+  }
+}
